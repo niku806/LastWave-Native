@@ -512,12 +512,18 @@ class SettingsViewModel @Inject constructor(
     fun setLyricsOffsetMs(offsetMs: Long) = launchSettingsAction("update lyrics sync offset") {
         settingsPreferences.setLyricsOffsetMs(offsetMs.coerceIn(-3000L, 3000L))
     }
+    fun setLyricsFontScale(scale: Float) = launchSettingsAction("update lyrics font scale") {
+        settingsPreferences.setLyricsFontScale(scale)
+    }
     fun setCrossfadeEnabled(enabled: Boolean) = launchSettingsAction("update crossfade") { settingsPreferences.setCrossfadeEnabled(enabled) }
     fun setCrossfadeSeconds(seconds: Int) = launchSettingsAction("update crossfade duration") {
         settingsPreferences.setCrossfadeSeconds(seconds.coerceIn(1, 12))
     }
     fun setWavySeekbarEnabled(enabled: Boolean) = launchSettingsAction("update seekbar style") {
         settingsPreferences.setWavySeekbarEnabled(enabled)
+    }
+    fun setRotatingBackgroundEnabled(enabled: Boolean) = launchSettingsAction("update rotating background") {
+        settingsPreferences.setRotatingBackgroundEnabled(enabled)
     }
     fun setCanvasEnabled(enabled: Boolean) = launchSettingsAction("update canvas enabled setting") {
         settingsPreferences.setCanvasEnabled(enabled)

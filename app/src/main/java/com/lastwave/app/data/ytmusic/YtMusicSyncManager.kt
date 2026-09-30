@@ -1,6 +1,7 @@
 package com.lastwave.app.data.ytmusic
 
 import android.util.Log
+import com.lastwave.app.data.generate.distinctSongs
 import com.lastwave.app.data.generate.youtubeVideoIdOrNull
 import com.lastwave.app.data.music.InnerTubeMusicApi
 import com.lastwave.app.data.music.YtOwnedPlaylist
@@ -278,7 +279,7 @@ class YtMusicSyncManager @Inject constructor(
                 async {
                     track.youtubeVideoIdOrNull()?.let { return@async it }
                     matchLimiter.withPermit {
-                        val cacheKey = "${track.name}|${track.artist}".lowercase().trim()
+                        val cacheKey = track.key
                         val negativeUntil = negativeMatchCache[cacheKey] ?: 0L
                         if (now < negativeUntil) {
                             null
@@ -297,6 +298,13 @@ class YtMusicSyncManager @Inject constructor(
         for (videoId in resolvedVideoIds) {
             if (videoId != null) desiredVideoIds += videoId else unmatched++
         }
+        // Push guard: only tracks carrying an explicit YouTube identity
+        // (watch URL / bare videoId on the track itself) may be uploaded to
+        // the user's YouTube playlist. Fuzzy search guesses stay local-only:
+        // pushing a guess is how songs the user never added end up in their
+        // YouTube playlist. Unresolvable tracks already count as unmatched;
+        // fuzzy-but-unpushable ids are counted too so the report stays honest.
+        val exactVideoIds = playlist.tracks.mapNotNull { it.youtubeVideoIdOrNull() }.toSet()
 
         // Fresh read-back only when we mutated the remote this pass (create /
         // rename); otherwise the top verification fetch is already current.
@@ -326,17 +334,20 @@ class YtMusicSyncManager @Inject constructor(
             (baseline - removedLocally - removedRemotely) +
                 (localSet - baseline) + (remoteSet - baseline)
         }
+        // Distinct: a duplicated videoId locally must collapse to one entry —
+        // otherwise the duplicate is pushed to YouTube and amplified remote.
         val finalVideoIds = buildList {
             desiredVideoIds.filterTo(this) { it in finalSet }
             remoteVideoIds.filterTo(this) { it in finalSet && it !in this }
-        }
+        }.distinct()
 
         val toRemove = remoteItems
             .filter { it.videoId !in finalSet }
             .map { item ->
                 checkNotNull(item.setVideoId) { "Missing YouTube Music removal token" } to item.videoId
             }
-        val toAdd = finalVideoIds.filter { it !in remoteSet }
+        val toAdd = finalVideoIds.filter { it !in remoteSet && it in exactVideoIds }
+        unmatched += finalVideoIds.count { it !in remoteSet && it !in exactVideoIds }
 
         if (toRemove.isNotEmpty()) {
             check(innerTube.removeVideosFromRemotePlaylist(remoteId, toRemove)) {
@@ -359,10 +370,24 @@ class YtMusicSyncManager @Inject constructor(
             val localByVideoId = resolvedVideoIds.mapIndexedNotNull { index, videoId ->
                 videoId?.let { it to playlist.tracks[index] }
             }.toMap()
+            // Keys of songs already represented with a KEPT resolved videoId. A
+            // videoId-less local copy with the same key is the classic
+            // heart-like (Qobuz/local, url="") vs YT-copy duplicate — drop it
+            // here so the merge heals instead of preserving both copies.
+            // (Only kept videoIds count: a removed copy must not swallow the
+            // surviving videoId-less original.)
+            val resolvedKeys = localByVideoId
+                .filterKeys { it in finalSet }
+                .values.mapTo(mutableSetOf()) { it.key }
             val mergedTracks = buildList {
+                val seenVideoIds = mutableSetOf<String>()
                 playlist.tracks.forEachIndexed { index, track ->
                     val videoId = resolvedVideoIds[index]
-                    if (videoId == null || videoId in finalSet) add(track)
+                    if (videoId == null) {
+                        if (track.key !in resolvedKeys) add(track)
+                    } else if (videoId in finalSet && seenVideoIds.add(videoId)) {
+                        add(track)
+                    }
                 }
                 val represented = resolvedVideoIds.filterNotNull().toSet()
                 finalVideoIds.filterNot { it in represented }.forEach { videoId ->
@@ -370,7 +395,7 @@ class YtMusicSyncManager @Inject constructor(
                         ?: remoteMetadata[videoId]?.toGeneratedTrack()
                     add(checkNotNull(track) { "Missing YouTube Music track metadata" })
                 }
-            }
+            }.distinctSongs()
             checkNotNull(playlistRepository.replaceTracksForSync(playlist.id, mergedTracks, playlist.tracks)) {
                 "Playlist changed during sync; retry on the next pass"
             }
